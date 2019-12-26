@@ -55,7 +55,7 @@
 #include "SEGGER_RTT.h"
 #include "warp.h"
 
-//#define WARP_FRDMKL03
+#define WARP_FRDMKL03
 
 /*
 *	Comment out the header file to disable devices
@@ -80,6 +80,8 @@
 //#include "devRV8803C7.h"
 #else
 #	include "devMMA8451Q.h"
+#   include "devSSD1331.h"
+#   include "devINA219.h"
 #endif
 
 #define WARP_BUILD_ENABLE_SEGGER_RTT_PRINTF
@@ -169,6 +171,9 @@ volatile WarpI2CDeviceState			deviceAS7263State;
 volatile WarpI2CDeviceState			deviceRV8803C7State;
 #endif
 
+#ifdef WARP_BUILD_ENABLE_DEVINA219
+volatile WarpI2CDeviceState			deviceINA219State;
+#endif
 /*
  *	TODO: move this and possibly others into a global structure
  */
@@ -1235,7 +1240,7 @@ main(void)
 #endif
 
 #ifdef WARP_BUILD_ENABLE_DEVMMA8451Q
-	initMMA8451Q(	0x1C	/* i2cAddress */,	&deviceMMA8451QState	);
+	initMMA8451Q(	0x1D	/* i2cAddress */,	&deviceMMA8451QState	);
 #endif	
 
 #ifdef WARP_BUILD_ENABLE_DEVLPS25H
@@ -1308,7 +1313,9 @@ main(void)
 	initPAN1326B(&devicePAN1326BState);
 #endif
 
-
+#ifdef WARP_BUILD_ENABLE_DEVINA219
+	initINA219(	0x40	/* i2cAddress */,	&deviceINA219State	);
+#endif	
 
 	/*
 	 *	Make sure SCALED_SENSOR_SUPPLY is off.
@@ -1341,7 +1348,7 @@ main(void)
 
 
 
-
+	devSSD1331init();
 	while (1)
 	{
 		/*
@@ -1573,6 +1580,13 @@ main(void)
 #endif
 				OSA_TimeDelay(gWarpMenuPrintDelayMilliseconds);
 
+#ifdef WARP_BUILD_ENABLE_DEVINA219
+				SEGGER_RTT_WriteString(0, "\r\t- 'l' INA219\n");
+				#else
+				SEGGER_RTT_WriteString(0, "\r\t- 'l' INA219			(compiled out) \n");
+#endif
+				OSA_TimeDelay(gWarpMenuPrintDelayMilliseconds);
+
 				SEGGER_RTT_WriteString(0, "\r\tEnter selection> ");
 				OSA_TimeDelay(gWarpMenuPrintDelayMilliseconds);
 
@@ -1721,6 +1735,14 @@ main(void)
 					{
 						menuTargetSensor = kWarpSensorAS7263;
 						menuI2cDevice = &deviceAS7263State;
+						break;
+					}
+#endif
+#ifdef WARP_BUILD_ENABLE_DEVINA219
+					case 'l':
+					{
+						menuTargetSensor = kWarpSensorINA219;
+						menuI2cDevice = &deviceINA219State;
 						break;
 					}
 #endif
@@ -1967,6 +1989,18 @@ main(void)
 #ifdef WARP_BUILD_ENABLE_SEGGER_RTT_PRINTF
 				SEGGER_RTT_printf(0, "\r\n\tRepeating dev%d @ 0x%02x, reps=%d, pull=%d, delay=%dms:\n\n",
 					menuTargetSensor, menuRegisterAddress, repetitionsPerAddress, menuI2cPullupValue, spinDelay);
+#endif
+#ifdef WARP_BUILD_ENABLE_DEVINA219
+				if (menuTargetSensor == kWarpSensorINA219) {
+					SEGGER_RTT_WriteString(0, "\r\n\tEnabling I2C pins...\n");
+					enableI2Cpins(menuI2cPullupValue);
+					configureSensorINA219(0x01,/* Configuration MSB */
+									0x9F,/* Configuration LSB */
+									0xA0,/* Calibration MSB */
+									0x00,/* Calibration LSB */
+									menuI2cPullupValue
+									);
+				}
 #endif
 
 				repeatRegisterReadForDeviceAndAddress(	menuTargetSensor /*warpSensorDevice*/, 
@@ -2575,6 +2609,14 @@ printAllSensors(bool printHeadersAndCalibration, bool hexModeFlag, int menuDelay
 					i2cPullupValue
 					);
 	#endif
+	#ifdef WARP_BUILD_ENABLE_DEVINA219
+	numberOfConfigErrors += configureSensorINA219(0x01,/* Configuration MSB */
+					0x9F,/* Configuration LSB */
+					0xA0,/* Calibration MSB */
+					0x00,/* Calibration LSB */
+					i2cPullupValue
+					);
+	#endif
 
 
 	if (printHeadersAndCalibration)
@@ -2626,6 +2668,10 @@ printAllSensors(bool printHeadersAndCalibration, bool hexModeFlag, int menuDelay
 		SEGGER_RTT_WriteString(0, " HDC1000 Temp, HDC1000 Hum,");
 		OSA_TimeDelay(gWarpMenuPrintDelayMilliseconds);
 		#endif
+		#ifdef WARP_BUILD_ENABLE_DEVINA219
+		SEGGER_RTT_WriteString(0, " INA219 Current,");
+		OSA_TimeDelay(gWarpMenuPrintDelayMilliseconds);
+		#endif
 		SEGGER_RTT_WriteString(0, " RTC->TSR, RTC->TPR, # Config Errors");
 		OSA_TimeDelay(gWarpMenuPrintDelayMilliseconds);
 		SEGGER_RTT_WriteString(0, "\n\n");
@@ -2665,7 +2711,9 @@ printAllSensors(bool printHeadersAndCalibration, bool hexModeFlag, int menuDelay
 		#ifdef WARP_BUILD_ENABLE_DEVHDC1000
 		printSensorDataHDC1000(hexModeFlag);
 		#endif
-	
+		#ifdef WARP_BUILD_ENABLE_DEVINA219
+		printSensorDataINA219(hexModeFlag);
+		#endif
 
 		#ifdef WARP_BUILD_ENABLE_SEGGER_RTT_PRINTF
 		SEGGER_RTT_printf(0, " %d, %d, %d\n", RTC->TSR, RTC->TPR, numberOfConfigErrors);
@@ -2682,7 +2730,7 @@ printAllSensors(bool printHeadersAndCalibration, bool hexModeFlag, int menuDelay
 
 
 void
-loopForSensor(	const char *  tagString,
+loopForSensorWithNumberOfBytes(	const char *  tagString,
 		WarpStatus  (* readSensorRegisterFunction)(uint8_t deviceRegister, int numberOfBytes),
 		volatile WarpI2CDeviceState *  i2cDeviceState,
 		volatile WarpSPIDeviceState *  spiDeviceState,
@@ -2696,11 +2744,12 @@ loopForSensor(	const char *  tagString,
 		uint16_t  sssupplyMillivolts,
 		uint8_t  referenceByte,
 		uint16_t adaptiveSssupplyMaxMillivolts,
-		bool  chatty
+		bool  chatty,
+		int numberOfBytes
 		)
 {
 	WarpStatus		status;
-	uint8_t			address = min(minAddress, baseAddress);
+	uint8_t			address = baseAddress;
 	int			readCount = repetitionsPerAddress + 1;
 	int			nSuccesses = 0;
 	int			nFailures = 0;
@@ -2728,7 +2777,7 @@ loopForSensor(	const char *  tagString,
 	{
 		for (int i = 0; i < readCount; i++) for (int j = 0; j < chunkReadsPerAddress; j++)
 		{
-			status = readSensorRegisterFunction(address+j, 1 /* numberOfBytes */);
+			status = readSensorRegisterFunction(address+j, numberOfBytes /* numberOfBytes */);
 			if (status == kWarpStatusOK)
 			{
 				nSuccesses++;
@@ -2766,9 +2815,11 @@ loopForSensor(	const char *  tagString,
 					if (chatty)
 					{
 #ifdef WARP_BUILD_ENABLE_SEGGER_RTT_PRINTF
-						SEGGER_RTT_printf(0, "\r\t0x%02x --> 0x%02x\n",
-							address+j,
-							i2cDeviceState->i2cBuffer[0]);
+						SEGGER_RTT_printf(0, "\r\t0x%02x --> ", address+j);
+						for (int k = 0; k < numberOfBytes; k++) {
+							SEGGER_RTT_printf(0, "0x%02x ", i2cDeviceState->i2cBuffer[k]);
+						}
+						SEGGER_RTT_printf(0, "\n");
 #endif
 					}
 				}
@@ -2830,6 +2881,41 @@ loopForSensor(	const char *  tagString,
 	return;
 }
 
+void
+loopForSensor(	const char *  tagString,
+		WarpStatus  (* readSensorRegisterFunction)(uint8_t deviceRegister, int numberOfBytes),
+		volatile WarpI2CDeviceState *  i2cDeviceState,
+		volatile WarpSPIDeviceState *  spiDeviceState,
+		uint8_t  baseAddress,
+		uint8_t  minAddress,
+		uint8_t  maxAddress,
+		int  repetitionsPerAddress,
+		int  chunkReadsPerAddress,
+		int  spinDelay,
+		bool  autoIncrement,
+		uint16_t  sssupplyMillivolts,
+		uint8_t  referenceByte,
+		uint16_t adaptiveSssupplyMaxMillivolts,
+		bool  chatty
+		)
+{
+	return loopForSensorWithNumberOfBytes(tagString, 
+	readSensorRegisterFunction, 
+	i2cDeviceState,
+	spiDeviceState,
+	baseAddress,
+	minAddress,
+	maxAddress,
+	repetitionsPerAddress,
+	chunkReadsPerAddress,
+	spinDelay,
+	autoIncrement,
+	sssupplyMillivolts,
+	referenceByte,
+	adaptiveSssupplyMaxMillivolts,
+	chatty,
+	1);
+}
 
 
 void
@@ -3314,6 +3400,35 @@ repeatRegisterReadForDeviceAndAddress(WarpSensorDevice warpSensorDevice, uint8_t
 					);
 			#else
 			SEGGER_RTT_WriteString(0, "\r\n\tAS7263 Read Aborted. Device Disabled :( ");
+#endif
+			break;
+		}
+
+		case kWarpSensorINA219:
+		{
+			/*
+			 *	INA219
+			 */
+#ifdef WARP_BUILD_ENABLE_DEVINA219
+			loopForSensorWithNumberOfBytes(	"\r\nINA219:\n\r",		/*	tagString			*/
+					&readSensorRegisterINA219,	/*	readSensorRegisterFunction	*/
+					&deviceINA219State,		/*	i2cDeviceState			*/
+					NULL,				/*	spiDeviceState			*/
+					baseAddress,			/*	baseAddress			*/
+					0x00,				/*	minAddress			*/
+					0x05,				/*	maxAddress			*/
+					repetitionsPerAddress,		/*	repetitionsPerAddress		*/
+					chunkReadsPerAddress,		/*	chunkReadsPerAddress		*/
+					spinDelay,			/*	spinDelay			*/
+					autoIncrement,			/*	autoIncrement			*/
+					sssupplyMillivolts,		/*	sssupplyMillivolts		*/
+					referenceByte,			/*	referenceByte			*/
+					adaptiveSssupplyMaxMillivolts,	/*	adaptiveSssupplyMaxMillivolts	*/
+					chatty,				/*	chatty				*/
+					2					/*	numberOfBytes 		*/
+					);
+			#else
+			SEGGER_RTT_WriteString(0, "\r\n\tINA219 Read Aborted. Device Disabled :(");
 #endif
 			break;
 		}
